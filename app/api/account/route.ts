@@ -1,15 +1,18 @@
-﻿import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/session";
+import { secureJson as secureJsonBase } from '@/lib/security-json';
+﻿import { requireSession } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
-    const c = await requireSession();
+    const c = await requireSession().then(c=>{responseCredentials=c;return c;});
 
     if (!c.serverUrl || !c.username || !c.password) {
-      return NextResponse.json({ ok: false, error: "Session incomplete" }, { status: 401 });
+      return secureJson({ ok: false, error: "Session incomplete" }, { status: 401 });
     }
 
     const base = c.serverUrl.replace(/\/+$/, "");
@@ -23,13 +26,13 @@ export async function GET() {
     });
 
     if (!response.ok) {
-      return NextResponse.json({ ok: false }, { status: response.status });
+      return secureJson({ ok: false }, { status: response.status });
     }
 
     const data = await response.json();
     const user = data?.user_info ?? {};
 
-    return NextResponse.json({
+    return secureJson({
       ok: true,
       username: user.username ?? c.username,
       status: user.status ?? null,
@@ -38,6 +41,6 @@ export async function GET() {
       activeConnections: user.active_cons ?? null,
     });
   } catch {
-    return NextResponse.json({ ok: false }, { status: 401 });
+    return secureJson({ ok: false }, { status: 401 });
   }
 }

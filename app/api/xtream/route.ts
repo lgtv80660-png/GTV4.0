@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 import { requireSession } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -30,34 +30,38 @@ function cacheable(action: string) {
 }
 
 export async function GET(req: Request) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   let creds: any;
   try {
-    creds = await requireSession();
+    creds = await requireSession().then(c=>{responseCredentials=c;return c;});
   } catch {
-    return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+    return secureJson({ error: "Non authentifié" }, { status: 401 });
   }
 
   try {
     const { searchParams } = new URL(req.url);
     const action = searchParams.get("action") || "";
+    if (!['get_live_categories','get_live_streams','get_vod_categories','get_vod_streams','get_series_categories','get_series','get_vod_info','get_series_info','get_short_epg','get_simple_data_table'].includes(action))return secureJson({error:'Action refusée'},{status:400});
     const baseUrl = String(creds?.baseUrl || creds?.url || creds?.serverUrl || "").replace(/\/+$/, "");
     const username = String(creds?.username || creds?.user || "");
     const password = String(creds?.password || creds?.pass || "");
 
     if (!baseUrl || !username || !password) {
-      return NextResponse.json({ error: "Identifiants incomplets" }, { status: 400 });
+      return secureJson({ error: "Identifiants incomplets" }, { status: 400 });
     }
 
     const forwarded = new URLSearchParams();
     searchParams.forEach((value, key) => {
-      if (key !== "action") forwarded.append(key, value);
+      if (['category_id','vod_id','series_id','stream_id','limit'].includes(key)) forwarded.append(key, value);
     });
     const cacheKey = `${baseUrl}|${username}|${action}|${forwarded.toString()}`;
 
     if (cacheable(action)) {
       const hit = cache.get(cacheKey);
       if (hit && hit.expiresAt > Date.now()) {
-        return NextResponse.json(hit.value, {
+        return secureJson(hit.value, {
           headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300", "x-gtv-cache": "hit" },
         });
       }
@@ -73,6 +77,7 @@ export async function GET(req: Request) {
       const res = await fetch(url.toString(), {
         headers: { "User-Agent": "GTV/3.0" },
         cache: "no-store",
+        redirect: "error",
         signal: AbortSignal.timeout(15000),
       });
       if (!res.ok) throw Object.assign(new Error(`Erreur IPTV (${res.status})`), { status: res.status });
@@ -94,10 +99,10 @@ export async function GET(req: Request) {
 
     if (cacheable(action)) cache.set(cacheKey, { expiresAt: Date.now() + ttlFor(action), value: data });
 
-    return NextResponse.json(data, {
+    return secureJson(data, {
       headers: { "Cache-Control": "private, max-age=30, stale-while-revalidate=180", "x-gtv-cache": "miss" },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Erreur serveur" }, { status: err?.status || 500 });
+    return secureJson({ error: "Requête indisponible" }, { status: err?.status || 500 });
   }
 }

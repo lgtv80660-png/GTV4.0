@@ -1,4 +1,5 @@
-import { requireSession } from "@/lib/session";
+import {playbackId} from '@/lib/media-processes';
+import { requireSession, sessionToken } from "@/lib/session";
 import {
   createVodSession,
   findVodSession,
@@ -22,15 +23,16 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
 
   try {
+    const credentials=await requireSession(),owner=await sessionToken();
     const sessionId = url.searchParams.get("s");
 
     // =========================
-    // HLS SESSION EXISTANTE
+    // SESSION HLS EXISTANTE
     // =========================
     if (sessionId) {
       const session = findVodSession(sessionId);
 
-      if (!session) {
+      if (!session || session.owner !== owner) {
         return new Response("Session HLS expirée", {
           status: 404,
           headers,
@@ -41,6 +43,7 @@ export async function GET(req: Request) {
 
       if (file) {
         const match = /^seg-(\d{6})\.ts$/.exec(file);
+
         if (!match) {
           return new Response("Segment invalide", {
             status: 400,
@@ -52,13 +55,13 @@ export async function GET(req: Request) {
         const maxSegments = Math.ceil(session.duration / SEGMENT);
 
         if (segIndex < 0 || segIndex >= maxSegments) {
-          return new Response("Index de segment hors limites", {
+          return new Response("Index segment hors limites", {
             status: 400,
             headers,
           });
         }
 
-        const segment = await vodSegment(session, file);
+        const segment = await vodSegment(session, file,req.signal);
 
         return new Response(new Uint8Array(segment), {
           headers: {
@@ -73,21 +76,28 @@ export async function GET(req: Request) {
       return new Response(vodManifest(session), {
         headers: {
           ...headers,
-          "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+          "Content-Type":
+            "application/vnd.apple.mpegurl; charset=utf-8",
           "X-GTV-Session": session.id,
         },
       });
     }
 
+
     // =========================
     // CREATION SESSION VOD
     // =========================
+
     const type =
-      url.searchParams.get("type") === "series" ? "series" : "movie";
+      url.searchParams.get("type") === "series"
+        ? "series"
+        : "movie";
 
     const id = url.searchParams.get("id") || "";
 
-    const ext = (url.searchParams.get("ext") || "mkv").toLowerCase();
+    const ext =
+      (url.searchParams.get("ext") || "mkv").toLowerCase();
+
 
     if (!/^\d+$/.test(id)) {
       return new Response("ID VOD invalide", {
@@ -96,6 +106,25 @@ export async function GET(req: Request) {
       });
     }
 
+
+    if (['_h','_u','_p'].some(k=>url.searchParams.has(k)))return new Response('Credentials URL refusés',{status:400});
+    const {serverUrl:host,username,password}=credentials;
+    if (!host || !username || !password) {
+      return new Response("Identifiants Xtream incomplets", {
+        status: 400,
+        headers,
+      });
+    }
+
+
+    if (!/^https?:\/\//i.test(host)) {
+      return new Response("Host Xtream invalide", {
+        status: 400,
+        headers,
+      });
+    }
+
+
     if (!/^[a-z0-9]{1,10}$/.test(ext)) {
       return new Response("Extension invalide", {
         status: 400,
@@ -103,36 +132,6 @@ export async function GET(req: Request) {
       });
     }
 
-    let host = url.searchParams.get("_h");
-    let username = url.searchParams.get("_u");
-    let password = url.searchParams.get("_p");
-
-    if (!host || !username || !password) {
-      try {
-        const credentials = await requireSession();
-
-        host = credentials.serverUrl || null;
-        username = credentials.username || null;
-        password = credentials.password || null;
-      } catch {
-        return new Response("Non autorisé", {
-          status: 401,
-          headers,
-        });
-      }
-    }
-
-    if (
-      !host ||
-      !username ||
-      !password ||
-      !/^https?:\/\//i.test(host)
-    ) {
-      return new Response("Identifiants Xtream incomplets", {
-        status: 400,
-        headers,
-      });
-    }
 
     const input =
       `${host.replace(/\/+$/, "")}/${type}/` +
@@ -140,7 +139,13 @@ export async function GET(req: Request) {
       `${encodeURIComponent(password)}/` +
       `${id}.${ext}`;
 
-    const session = await createVodSession(input);
+
+    // IMPORTANT :
+    // création immédiate
+    // aucun blocage sur le premier segment
+
+    const session = await createVodSession(input, owner,playbackId(url.searchParams.get('p')));
+
 
     return new Response(null, {
       status: 302,
@@ -149,30 +154,43 @@ export async function GET(req: Request) {
         Location: `/api/vod-hls?s=${session.id}`,
       },
     });
+
+
   } catch (error: any) {
-    return new Response(error?.message || "Génération HLS indisponible", {
-      status: 503,
-      headers: {
-        ...headers,
-        "Retry-After": "2",
-      },
-    });
+
+    return new Response(
+      "Génération HLS indisponible",
+      {
+        status: 503,
+        headers: {
+          ...headers,
+          "Retry-After": "2",
+        },
+      }
+    );
   }
 }
 
+
+
 export async function HEAD(req: Request) {
+  let owner:string;try{await requireSession();owner=await sessionToken();}catch{return new Response(null,{status:401,headers});}
   const url = new URL(req.url);
 
   const sessionId = url.searchParams.get("s");
 
-  const session = sessionId ? findVodSession(sessionId) : undefined;
+  const session = sessionId
+    ? findVodSession(sessionId)
+    : undefined;
 
-  if (sessionId && !session) {
+
+  if (sessionId && (!session || session.owner !== owner)) {
     return new Response(null, {
       status: 404,
       headers,
     });
   }
+
 
   return new Response(null, {
     headers: {
@@ -184,12 +202,15 @@ export async function HEAD(req: Request) {
   });
 }
 
+
+
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
       ...headers,
-      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Methods":
+        "GET, HEAD, OPTIONS",
     },
   });
 }

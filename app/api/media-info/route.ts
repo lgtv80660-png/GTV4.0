@@ -1,3 +1,4 @@
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 import { requireSession } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -72,6 +73,9 @@ function extractDuration(info: any) {
 }
 
 export async function GET(req: Request) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
     /* =====================================================
        SESSION XTREAM
@@ -80,9 +84,9 @@ export async function GET(req: Request) {
     let sessionData: any;
 
     try {
-      sessionData = await requireSession();
+      sessionData = await requireSession().then(c=>{responseCredentials=c;return c;});
     } catch {
-      return Response.json(
+      return secureJson(
         {
           ok: false,
           error: "Non authentifié",
@@ -122,7 +126,7 @@ export async function GET(req: Request) {
       !username ||
       !password
     ) {
-      return Response.json(
+      return secureJson(
         {
           ok: false,
           error: "Identifiants Xtream incomplets",
@@ -156,7 +160,7 @@ export async function GET(req: Request) {
       id;
 
     if (!id && !seriesId) {
-      return Response.json(
+      return secureJson(
         {
           ok: false,
           error: "ID manquant",
@@ -190,7 +194,7 @@ export async function GET(req: Request) {
         });
 
       if (!response.ok) {
-        return Response.json(
+        return secureJson(
           {
             ok: false,
             error: `Xtream VOD info ${response.status}`,
@@ -215,7 +219,7 @@ export async function GET(req: Request) {
         extractDuration(info) ||
         extractDuration(data?.movie_data);
 
-      return Response.json({
+      return secureJson({
         ok: true,
         type: "movie",
         id,
@@ -235,7 +239,7 @@ export async function GET(req: Request) {
 
     if (type === "series") {
       if (!seriesId) {
-        return Response.json(
+        return secureJson(
           {
             ok: false,
             error:
@@ -265,7 +269,7 @@ export async function GET(req: Request) {
         });
 
       if (!response.ok) {
-        return Response.json(
+        return secureJson(
           {
             ok: false,
             error: `Xtream series info ${response.status}`,
@@ -329,7 +333,7 @@ export async function GET(req: Request) {
       }
 
       if (!foundEpisode) {
-        return Response.json({
+        return secureJson({
           ok: false,
           type: "series",
           seriesId,
@@ -348,7 +352,7 @@ export async function GET(req: Request) {
           foundEpisode
         );
 
-      return Response.json({
+      return secureJson({
         ok: true,
 
         type: "series",
@@ -376,7 +380,7 @@ export async function GET(req: Request) {
       });
     }
 
-    return Response.json(
+    return secureJson(
       {
         ok: false,
         error: "Type inconnu",
@@ -387,18 +391,14 @@ export async function GET(req: Request) {
       }
     );
   } catch (error: any) {
-    console.error(
-      "[GTV MEDIA INFO]",
-      error
-    );
+    void 0;
 
-    return Response.json(
+    return secureJson(
       {
         ok: false,
         duration: 0,
         error:
-          error?.message ||
-          "Erreur media-info",
+          "Requête indisponible",
       },
       {
         status: 500,
