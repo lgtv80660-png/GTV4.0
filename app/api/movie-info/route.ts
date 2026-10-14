@@ -1,23 +1,25 @@
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 ﻿import { requireSession } from "@/lib/session";
-import { NextResponse } from "next/server";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
     if (!id) {
-      return NextResponse.json({ error: "ID manquant" }, { status: 400 });
+      return secureJson({ error: "ID manquant" }, { status: 400 });
     }
 
     let creds: any;
     try {
-      creds = await requireSession();
+      creds = await requireSession().then(c=>{responseCredentials=c;return c;});
     } catch (e) {
-      return NextResponse.json(
+      return secureJson(
         { error: "Session non authentifiee" },
         { status: 401 }
       );
@@ -28,7 +30,7 @@ export async function GET(req: Request) {
     const p = creds?.password || creds?.pass || "";
 
     if (!host || !u || !p) {
-      return NextResponse.json(
+      return secureJson(
         { error: "Identifiants IPTV incomplets." },
         { status: 400 }
       );
@@ -42,16 +44,16 @@ export async function GET(req: Request) {
     });
 
     if (!res.ok) {
-      return NextResponse.json(
+      return secureJson(
         { error: `Erreur serveur IPTV (${res.status})` },
         { status: res.status }
       );
     }
 
     const data = await res.json();
-    return NextResponse.json(data);
+    return secureJson(data);
   } catch (err: any) {
-    console.error("Erreur movie-info:", err);
-    return NextResponse.json({ error: err.message || "Erreur interne" }, { status: 500 });
+    void 0;
+    return secureJson({ error: "Requête indisponible" }, { status: 500 });
   }
 }

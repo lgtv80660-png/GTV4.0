@@ -1,3 +1,7 @@
+import {privateMediaInput} from '@/lib/private-media-input';
+import {trackMedia,mediaEnvironment,stopChild,spawnMedia} from '@/lib/media-processes';
+import {sessionToken} from '@/lib/session';
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 import { spawn, ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, stat, rm } from "node:fs/promises";
@@ -17,29 +21,33 @@ const globalLab = globalThis as typeof globalThis & { audioVodLab?: Map<string, 
 const jobs = globalLab.audioVodLab ??= new Map<string, Job>();
 
 async function remove(key: string, job: Job) {
-  job.child?.kill();
+  if(job.child)stopChild(job.child);
   if (job.timer) clearInterval(job.timer);
   jobs.delete(key);
   await rm(job.dir, { recursive: true, force: true });
 }
 
-async function prepare(job: Job, source: string) {
-  const child = spawn(/* turbopackIgnore: true */ process.env.FFMPEG_PATH || "ffmpeg", [
+async function prepare(job: Job, source: string, owner:string) {
+  const relay=await privateMediaInput(source,owner);
+  let child:ReturnType<typeof spawnMedia>;try{child = spawnMedia('ffmpeg',/* turbopackIgnore: true */ process.env.FFMPEG_PATH || "ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "2",
-    "-rw_timeout", "30000000", "-fflags", "+genpts", "-i", source,
+    "-rw_timeout", "30000000", "-fflags", "+genpts", "-i", relay.url,
     "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy",
     "-c:a", "aac", "-ac", "2", "-b:a", "192k", "-threads", "2",
     "-avoid_negative_ts", "make_zero", "-f", "hls", "-hls_time", "6",
     "-hls_playlist_type", "vod", "-hls_list_size", "0",
     "-hls_segment_filename", join(job.dir, "segment-%06d.ts"),
     join(job.dir, "index.m3u8"),
-  ], { windowsHide: true, stdio: "ignore" });
+  ], { windowsHide: true, env:mediaEnvironment(), stdio: "ignore" });
+  }catch(error){relay.close();throw error;}
   job.child = child;
+  trackMedia(child,owner,'',()=>relay.close());
   const started = Date.now();
   const fail = (reason: string) => { job.reason = reason; job.state = "failed"; child.kill(); };
   let checking = false;
   job.timer = setInterval(async () => {
     if (checking) return;
+    if(Date.now()-job.touched>30000){fail("Préparation abandonnée");return;}
     checking = true;
     try {
       const files = await readdir(job.dir);
@@ -68,16 +76,21 @@ async function prepare(job: Job, source: string) {
 }
 
 const janitor = setInterval(() => {
-  for (const [key, job] of jobs) if (Date.now() - job.touched > TTL) void remove(key, job).catch(() => {});
-}, 60_000);
+  for (const [key, job] of jobs) if (Date.now() - job.touched > (job.state==='preparing'?30000:TTL)) void remove(key, job).catch(() => {});
+}, 5000);
 janitor.unref();
 
 export async function GET(request: Request) {
+  if(process.env.GTV_ENABLE_AUDIO_LAB!=='1'||process.env.NODE_ENV==='production')return Response.json({error:'Prétraitement audio désactivé. Utiliser la lecture directe ou le remux.'},{status:410,headers:{'Cache-Control':'no-store'}});
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
+
   const url = new URL(request.url);
   const id = url.searchParams.get("id");
   if (!id || !/^\d+$/.test(id)) return new Response("ID invalide", { status: 400 });
   let credentials;
-  try { credentials = await requireSession(); } catch { return new Response("Non authentifié", { status: 401 }); }
+  try { credentials = await requireSession().then(c=>{responseCredentials=c;return c;}); } catch { return new Response("Non authentifié", { status: 401 }); }
   const { serverUrl, username, password } = credentials;
   if (!serverUrl || !username || !password) return new Response("Session incomplète", { status: 401 });
   const key = createHash("sha256").update(JSON.stringify([serverUrl, username, password, id])).digest("hex");
@@ -87,7 +100,7 @@ export async function GET(request: Request) {
   let job = jobs.get(key);
   if (url.searchParams.get("cleanup") === "1") {
     if (job) await remove(key, job);
-    return Response.json({ cleaned: true }, { headers });
+    return secureJson({ cleaned: true }, { headers });
   }
   if (!job) {
     if (asset) return new Response("Préparation expirée", { status: 410, headers });
@@ -95,10 +108,10 @@ export async function GET(request: Request) {
     job = { dir: await mkdtemp(join(tmpdir(), "gtv-audio-vod-")), state: "preparing", touched: Date.now() };
     jobs.set(key, job);
     const source = `${serverUrl.replace(/\/+$/, "")}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.mkv`;
-    void prepare(job, source).catch(async () => { job!.state = "failed"; job!.reason = "Préparation échouée"; await rm(job!.dir, { recursive: true, force: true }); });
+    void prepare(job, source,await sessionToken()).catch(async () => { job!.state = "failed"; job!.reason = "Préparation échouée"; await rm(job!.dir, { recursive: true, force: true }); });
   }
   job.touched = Date.now();
-  if (job.state !== "ready") return Response.json({ state: job.state, reason: job.reason, limits: { storageGiB: 12, preparationMinutes: 45, retentionMinutes: 60 } }, { status: job.state === "failed" ? 502 : 202, headers: { ...headers, "Retry-After": "5" } });
+  if (job.state !== "ready") return secureJson({ state: job.state, reason: job.reason, limits: { storageGiB: 12, preparationMinutes: 45, retentionMinutes: 60 } }, { status: job.state === "failed" ? 502 : 202, headers: { ...headers, "Retry-After": "5" } });
   if (asset?.startsWith("segment-")) {
     try { return new Response(new Uint8Array(await readFile(join(job.dir, asset))), { headers: { ...headers, "Content-Type": "video/mp2t" } }); }
     catch { return new Response("Segment absent", { status: 404, headers }); }

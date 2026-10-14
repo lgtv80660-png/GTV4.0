@@ -28,7 +28,8 @@ export function buildStreamUrl(
   const username = creds.username || "";
   const password = creds.password || "";
 
-  return `${baseUrl}/${type}/${username}/${password}/${id}.${ext}`;
+  if(!['live','movie','series'].includes(type)||!/^\d+$/.test(String(id))||!/^[a-z0-9]{1,10}$/i.test(ext))throw Error('Invalid media');
+  return `${baseUrl}/${type}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.${ext}`;
 }
 
 /**

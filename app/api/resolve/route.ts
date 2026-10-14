@@ -1,5 +1,5 @@
-﻿import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/session";
+import { secureJson as secureJsonBase } from '@/lib/security-json';
+﻿import { requireSession } from "@/lib/session";
 import { buildStreamUrl } from "@/lib/xtream/urls";
 import type { StreamKind } from "@/lib/xtream/types";
 
@@ -10,11 +10,14 @@ const BROWSER_UA =
 const PROBE_TIMEOUT = 3000;
 
 export async function GET(req: Request) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   let creds: any;
   try {
-    creds = await requireSession();
+    creds = await requireSession().then(c=>{responseCredentials=c;return c;});
   } catch {
-    return NextResponse.json({ error: "Non authentifie" }, { status: 401 });
+    return secureJson({ error: "Non authentifie" }, { status: 401 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -23,7 +26,7 @@ export async function GET(req: Request) {
   const ext = searchParams.get("ext") || "mp4";
 
   if (!type || !id || !["live", "movie", "series"].includes(type)) {
-    return NextResponse.json({ error: "Requete invalide" }, { status: 400 });
+    return secureJson({ error: "Requete invalide" }, { status: 400 });
   }
 
   let url = "";
@@ -52,19 +55,19 @@ export async function GET(req: Request) {
       });
 
       directOk = res.ok || res.status === 206;
-      console.log(`[RESOLVE] ${type}/${id} directOk=${directOk} status=${res.status} (${Date.now() - t0}ms)`);
+      void 0;
       
       res.body?.cancel().catch(() => {});
     } catch (e) {
-      console.log(`[RESOLVE] ${type}/${id} directOk=false (${Date.now() - t0}ms)`);
+      void 0;
       directOk = false;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  return NextResponse.json({ 
-    url, 
+  return secureJson({ 
+    url: '/api/vod-direct?'+new URLSearchParams({type,id,ext}).toString(), 
     directOk, 
     ext,
     proxyUrl: `/api/stream-vod?type=${type}&id=${id}&ext=${ext}`

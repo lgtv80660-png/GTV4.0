@@ -1,23 +1,25 @@
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 ﻿import { requireSession } from "@/lib/session";
-import { NextResponse } from "next/server";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id") || searchParams.get("series_id");
 
     if (!id) {
-      return NextResponse.json({ error: "ID de serie manquant" }, { status: 400 });
+      return secureJson({ error: "ID de serie manquant" }, { status: 400 });
     }
 
     let creds: any;
     try {
-      creds = await requireSession();
+      creds = await requireSession().then(c=>{responseCredentials=c;return c;});
     } catch {
-      return NextResponse.json({ error: "Non autorise" }, { status: 401 });
+      return secureJson({ error: "Non autorise" }, { status: 401 });
     }
 
     const host = (creds.baseUrl || creds.url || creds.serverUrl || "").replace(/\/+$/, "");
@@ -32,12 +34,12 @@ export async function GET(req: Request) {
     });
 
     if (!res.ok) {
-      return NextResponse.json({ error: "Erreur serveur IPTV" }, { status: res.status });
+      return secureJson({ error: "Erreur serveur IPTV" }, { status: res.status });
     }
 
     const data = await res.json();
-    return NextResponse.json(data);
+    return secureJson(data);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || "Erreur serveur" }, { status: 500 });
+    return secureJson({ error: "Requête indisponible" }, { status: 500 });
   }
 }

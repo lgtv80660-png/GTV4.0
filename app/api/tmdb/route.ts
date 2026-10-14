@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-const TMDB_API_KEY = "e2b0ef6fb66a1a1db7ae5f3037eb931d";
 
 const FALLBACK_MOVIES = [
   {
@@ -34,9 +33,11 @@ const FALLBACK_MOVIES = [
 ];
 
 export async function GET() {
+  const apiKey=process.env.TMDB_API_KEY;
+  if(!apiKey)return NextResponse.json({movies:FALLBACK_MOVIES},{headers:{'X-GTV-Metadata-Source':'fallback','X-GTV-Metadata-Failure':'not-configured','Cache-Control':'no-store'}});
   try {
     const res = await fetch(
-      `https://api.themoviedb.org/3/trending/all/week?api_key=${TMDB_API_KEY}&language=fr-FR&page=1`,
+      `https://api.themoviedb.org/3/trending/all/week?api_key=${encodeURIComponent(apiKey)}&language=fr-FR&page=1`,
       {
         headers: {
           "User-Agent":
@@ -44,11 +45,12 @@ export async function GET() {
           Accept: "application/json",
         },
         cache: "no-store",
+        signal: AbortSignal.timeout(10000),
       }
     );
 
     if (!res.ok) {
-      return NextResponse.json({ movies: FALLBACK_MOVIES }, { status: 200 });
+      return NextResponse.json({ movies: FALLBACK_MOVIES }, { status: 200,headers:{'X-GTV-Metadata-Source':'fallback','X-GTV-Metadata-Failure':'http-'+res.status,'Cache-Control':'no-store'} });
     }
 
     const data = await res.json();
@@ -70,9 +72,9 @@ export async function GET() {
 
     return NextResponse.json(
       { movies: movies.length > 0 ? movies : FALLBACK_MOVIES },
-      { status: 200 }
+      { status: 200,headers:{'X-GTV-Metadata-Source':movies.length>0?'tmdb':'fallback','Cache-Control':'no-store'} }
     );
   } catch (error) {
-    return NextResponse.json({ movies: FALLBACK_MOVIES }, { status: 200 });
+    return NextResponse.json({ movies: FALLBACK_MOVIES }, { status: 200,headers:{'X-GTV-Metadata-Source':'fallback','X-GTV-Metadata-Failure':'network-or-response','Cache-Control':'no-store'} });
   }
 }

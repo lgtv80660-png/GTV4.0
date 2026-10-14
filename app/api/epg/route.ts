@@ -1,3 +1,4 @@
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
 
@@ -5,18 +6,21 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
-    const c = await requireSession();
+    const c = await requireSession().then(c=>{responseCredentials=c;return c;});
 
     if (!c.serverUrl || !c.username || !c.password) {
-      return NextResponse.json({ error: "Session incomplete" }, { status: 401 });
+      return secureJson({ error: "Session incomplete" }, { status: 401 });
     }
 
     const streamId = req.nextUrl.searchParams.get("stream_id");
     const limit = req.nextUrl.searchParams.get("limit") || "8";
 
     if (!streamId) {
-      return NextResponse.json({ error: "Missing stream_id" }, { status: 400 });
+      return secureJson({ error: "Missing stream_id" }, { status: 400 });
     }
 
     const params = new URLSearchParams({
@@ -42,6 +46,6 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return secureJson({ error: "Unauthorized" }, { status: 401 });
   }
 }

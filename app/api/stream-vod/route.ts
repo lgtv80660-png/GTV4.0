@@ -1,3 +1,9 @@
+import {probeMedia,cachedMedia} from '@/lib/media-probe';
+import {mediaFetch} from '@/lib/media-relay';
+import {buildStreamUrl} from '@/lib/xtream/urls';
+import {privateMediaInput} from '@/lib/private-media-input';
+import {trackMedia,playbackId,mediaEnvironment,spawnMedia} from '@/lib/media-processes';
+import {sessionStream} from '@/lib/session-stream';
 // app/api/stream-vod/route.ts
 
 import {
@@ -6,11 +12,8 @@ import {
 
 import {
   requireSession,
+  sessionToken,
 } from "@/lib/session";
-
-import {
-  NextResponse,
-} from "next/server";
 
 export const runtime =
   "nodejs";
@@ -86,7 +89,7 @@ function safeKill(
 }
 
 async function checkUrl(
-  url: string
+  url: string, base: string
 ) {
   const controller =
     new AbortController();
@@ -99,38 +102,9 @@ async function checkUrl(
     );
 
   try {
-    const response =
-      await fetch(
-        url,
-        {
-          method:
-            "HEAD",
-
-          headers: {
-            "User-Agent":
-              UA,
-
-            Accept:
-              "*/*",
-          },
-
-          redirect:
-            "follow",
-
-          signal:
-            controller.signal,
-        }
-      );
-
-    return (
-      response.ok ||
-      response.status ===
-        206 ||
-      response.status ===
-        301 ||
-      response.status ===
-        302
-    );
+    const {response}=await mediaFetch(url,base,new Request('http://127.0.0.1/',{headers:{Range:'bytes=0-0'},signal:controller.signal}));
+    await response.body?.cancel();
+    return response.ok;
   } catch {
     return false;
   } finally {
@@ -192,7 +166,7 @@ async function resolveInputUrl({
 
   const primaryOk =
     await checkUrl(
-      primary
+      primary, clean
     );
 
   if (
@@ -226,7 +200,7 @@ async function resolveInputUrl({
 
     const ok =
       await checkUrl(
-        candidate
+        candidate, clean
       );
 
     if (ok) {
@@ -252,6 +226,7 @@ async function resolveInputUrl({
 export async function GET(
   req: Request
 ) {
+  const requestStarted=performance.now();
   try {
     const url =
       new URL(
@@ -314,7 +289,7 @@ export async function GET(
           )
         : 0;
 
-    if (!id) {
+    if (!id || !/^\d+$/.test(id)) {
       return new Response(
         "ID manquant",
         {
@@ -331,201 +306,15 @@ export async function GET(
        CREDENTIALS DIRECTES RAILWAY
     ===================================================== */
 
-    const directHost =
-      searchParams.get(
-        "_h"
-      );
+    if (['_h','_u','_p'].some(k=>searchParams.has(k)))return new Response('Credentials URL refusés',{status:400});
+    const secureCredentials=await requireSession();
+    const rawHost=cleanHost(secureCredentials.serverUrl),username=secureCredentials.username,password=secureCredentials.password;
 
-    const directUser =
-      searchParams.get(
-        "_u"
-      );
-
-    const directPass =
-      searchParams.get(
-        "_p"
-      );
-
-    let rawHost =
-      "";
-
-    let username =
-      "";
-
-    let password =
-      "";
-
-    /* =====================================================
-       VERCEL -> RAILWAY
-    ===================================================== */
-
-    if (
-      !directHost ||
-      !directUser ||
-      !directPass
-    ) {
-      let sessionData:
-        any;
-
-      try {
-        sessionData =
-          await requireSession();
-      } catch {
-        return new Response(
-          "Non autorisé",
-          {
-            status:
-              401,
-
-            headers:
-              NO_CACHE_HEADERS,
-          }
-        );
-      }
-
-      const creds =
-        sessionData?.user ||
-        sessionData;
-
-      rawHost =
-        creds?.baseUrl ||
-        creds?.url ||
-        creds?.serverUrl ||
-        creds?.server ||
-        creds?.host ||
-        "";
-
-      username =
-        creds?.username ||
-        creds?.user ||
-        "";
-
-      password =
-        creds?.password ||
-        creds?.pass ||
-        "";
-
-      if (
-        !rawHost ||
-        !username ||
-        !password
-      ) {
-        return new Response(
-          "Identifiants Xtream incomplets",
-          {
-            status:
-              400,
-
-            headers:
-              NO_CACHE_HEADERS,
-          }
-        );
-      }
-
-      const railwayUrl =
-        new URL(
-          "/api/stream-vod",
-          RAILWAY_URL
-        );
-
-      railwayUrl.searchParams.set(
-        "type",
-        type
-      );
-
-      railwayUrl.searchParams.set(
-        "id",
-        id
-      );
-
-      railwayUrl.searchParams.set(
-        "ext",
-        originalExt
-      );
-
-      if (
-        t > 0
-      ) {
-        railwayUrl.searchParams.set(
-          "t",
-          String(
-            t
-          )
-        );
-      }
-
-      railwayUrl.searchParams.set(
-        "_h",
-        rawHost
-      );
-
-      railwayUrl.searchParams.set(
-        "_u",
-        username
-      );
-
-      railwayUrl.searchParams.set(
-        "_p",
-        password
-      );
-
-      return NextResponse.redirect(
-        railwayUrl,
-        {
-          status:
-            302,
-
-          headers: {
-            "Cache-Control":
-              "no-store",
-          },
-        }
-      );
-    }
-
-    /* =====================================================
-       RAILWAY
-    ===================================================== */
-
-    rawHost =
-      cleanHost(
-        decodeURIComponent(
-          directHost
-        )
-      );
-
-    username =
-      decodeURIComponent(
-        directUser
-      );
-
-    password =
-      decodeURIComponent(
-        directPass
-      );
-
-    if (
-      !rawHost ||
-      !username ||
-      !password
-    ) {
-      return new Response(
-        "Paramètres Railway incomplets",
-        {
-          status:
-            400,
-
-          headers:
-            NO_CACHE_HEADERS,
-        }
-      );
-    }
-
-    /* =====================================================
-       FIND INPUT
-    ===================================================== */
-
-    const inputUrl =
+    const owner=await sessionToken();
+    const primary=buildStreamUrl(secureCredentials,type,id,originalExt);
+    // The plan already validated and probed this source. Do not repeat an
+    // upstream availability request on every fallback startup and seek.
+    const inputUrl = cachedMedia(primary,owner) ? primary :
       await resolveInputUrl({
         host:
           rawHost,
@@ -559,6 +348,15 @@ export async function GET(
        -ss AVANT -i.
     ===================================================== */
 
+    const metadata=await probeMedia(inputUrl,owner);
+    if(req.signal.aborted)return new Response(null,{status:499});
+    const audio=metadata.audio.find(a=>a.default)||metadata.audio[0];
+    const copyAudio=!audio||(audio.codec==='aac'&&audio.profile==='LC'&&audio.channels<=2);
+    const playback=playbackId(searchParams.get('p'));
+    const diagnose=process.env.GTV_LOCAL_RUNTIME==='1';
+    const traceId=diagnose?Math.random().toString(36).slice(2,10):'';
+    const trace=(event:string,details:Record<string,unknown>={})=>{if(diagnose)console.info('[stream-vod]',JSON.stringify({traceId,event,ms:Math.round(performance.now()-requestStarted),t,...details}));};
+    const relay=await privateMediaInput(inputUrl,owner);
     const args = [
       "-hide_banner",
 
@@ -566,6 +364,7 @@ export async function GET(
       "error",
 
       "-nostdin",
+      ...(diagnose?["-progress","pipe:2","-nostats"]:[]),
 
       "-user_agent",
       UA,
@@ -574,6 +373,7 @@ export async function GET(
         Génère des timestamps si la source MKV
         en a de mauvais ou certains manquent.
       */
+      "-noaccurate_seek",
       "-fflags",
       "+genpts",
 
@@ -583,6 +383,9 @@ export async function GET(
       */
       "-rw_timeout",
       "15000000",
+      // This provider truncates open-ended reads. Keep every FFmpeg read bounded
+      // when the probe has established real byte-range support.
+      ...(metadata.byteRanges?["-request_size","2097152","-initial_request_size","2097152"]:[]),
 
       /*
         Seek serveur rapide.
@@ -597,8 +400,9 @@ export async function GET(
           ]
         : []),
 
+      "-threads", "2",
       "-i",
-      inputUrl,
+      relay.url,
 
       /*
         Première vidéo.
@@ -610,7 +414,7 @@ export async function GET(
         Première piste audio si disponible.
       */
       "-map",
-      "0:a:0?",
+      `0:a:${audio?.ordinal??0}?`,
 
       /*
         VIDEO = ZERO TRANSCODAGE.
@@ -618,29 +422,9 @@ export async function GET(
       "-c:v",
       "copy",
 
-      /*
-        AUDIO -> AAC.
-      */
-      "-c:a",
-      "aac",
-
-      /*
-        Correction de dérive / microcoupures audio.
-      */
-      "-af",
-      "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
-
-      /*
-        Stéréo universelle navigateur.
-      */
-      "-ac",
-      "2",
-
-      /*
-        Bon compromis qualité / CPU / réseau.
-      */
-      "-b:a",
-      "160k",
+      "-threads:a", "1",
+      "-c:a",copyAudio?"copy":"aac",
+      ...(copyAudio?[]:["-profile:a","aac_low","-ac","2","-ar","48000","-b:a","192k"]),
 
       /*
         Évite timestamps négatifs
@@ -660,7 +444,7 @@ export async function GET(
         MP4 fragmenté lisible immédiatement.
       */
       "-movflags",
-      "frag_keyframe+empty_moov+default_base_moof",
+      "frag_keyframe+delay_moov+default_base_moof",
 
       /*
         Sortie streaming.
@@ -671,17 +455,18 @@ export async function GET(
       "pipe:1",
     ];
 
-    console.log(
-      `[GTV STREAM-VOD] ${type} id=${id} ext=${originalExt} seek=${t}s`
-    );
+    void 0;
 
-    const ff =
-      spawn(
+    let ff:ReturnType<typeof spawnMedia>;
+    try{ff =
+      spawnMedia(
+        "ffmpeg",
         /* turbopackIgnore: true */
         FFMPEG,
         args,
         {
-          stdio: [
+          windowsHide:true,env:mediaEnvironment(),
+      stdio: [
             "ignore",
             "pipe",
             "pipe",
@@ -689,6 +474,13 @@ export async function GET(
         }
       );
 
+    }catch(e){relay.close();throw e;}
+    trackMedia(ff,owner,playback,()=>relay.close(),req.signal);
+    let producedBytes=0,lastDataMs=0,mediaUs=0;
+    trace('ffmpeg-start',{pid:ff.pid});
+    const diagnostics=diagnose?setInterval(()=>trace('progress',{producedBytes,lastDataMs,paused:ff.stdout.isPaused(),mediaUs,upstreamStatus:relay.status(),upstreamReason:relay.reason()}),5000):undefined;
+    diagnostics?.unref();
+    ff.once('close',(code,signal)=>{if(diagnostics)clearInterval(diagnostics);const errors=stderr.split(/\r?\n/).filter(line=>line&&!/^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time_us|out_time_ms|out_time|dup_frames|drop_frames|speed|progress)=/.test(line)).join('\n').replace(/https?:\/\/[^\s'"\]]+/g,'[private-input]');let redacted=errors;for(const value of [rawHost,username,password])if(value)redacted=redacted.split(value).join('[masked]');trace('ffmpeg-close',{code,signal,producedBytes,mediaUs,upstreamStatus:relay.status(),upstreamReason:relay.reason(),errors:redacted.slice(-2000)});});
     let stderr =
       "";
 
@@ -702,6 +494,7 @@ export async function GET(
       ) => {
         stderr +=
           chunk.toString();
+        for(const match of chunk.toString().matchAll(/out_time_us=(\d+)/g))mediaUs=Number(match[1]);
 
         if (
           stderr.length >
@@ -729,10 +522,7 @@ export async function GET(
           signal !==
             "SIGKILL"
         ) {
-          console.error(
-            `[GTV FFMPEG] close code=${code} signal=${signal}`,
-            stderr
-          );
+          void 0;
         }
       }
     );
@@ -742,10 +532,7 @@ export async function GET(
       (
         error
       ) => {
-        console.error(
-          "[GTV FFMPEG] spawn error",
-          error
-        );
+        void 0;
       }
     );
 
@@ -771,6 +558,7 @@ export async function GET(
               chunk:
                 Buffer
             ) => {
+              producedBytes+=chunk.length;lastDataMs=Math.round(performance.now()-requestStarted);
               if (
                 streamClosed
               ) {
@@ -812,6 +600,15 @@ export async function GET(
           ff.stdout.on(
             "end",
             () => {
+              trace('stdout-end',{producedBytes});
+            }
+          );
+
+          // FFmpeg can exit 0 after an input read error. Do not turn a truncated
+          // movie into a successful short MP4 merely because stdout reached EOF.
+          ff.once(
+            "close",
+            (code) => {
               if (
                 streamClosed
               ) {
@@ -822,7 +619,8 @@ export async function GET(
                 true;
 
               try {
-                controller.close();
+                if(code!==0||/Read error|Error during demuxing|Stream ends prematurely|I\/O error/i.test(stderr))controller.error(new Error('Media unavailable'));
+                else controller.close();
               } catch {}
             }
           );
@@ -842,9 +640,7 @@ export async function GET(
                 true;
 
               try {
-                controller.error(
-                  error
-                );
+                controller.error(new Error('Media unavailable'));
               } catch {}
 
               safeKill(
@@ -868,9 +664,7 @@ export async function GET(
                 true;
 
               try {
-                controller.error(
-                  error
-                );
+                controller.error(new Error('Media unavailable'));
               } catch {}
             }
           );
@@ -888,6 +682,7 @@ export async function GET(
         },
 
         cancel() {
+          trace('response-cancel',{producedBytes});
           streamClosed =
             true;
 
@@ -903,6 +698,7 @@ export async function GET(
 
     const abortHandler =
       () => {
+        trace('request-abort',{producedBytes});
         streamClosed =
           true;
 
@@ -931,8 +727,7 @@ export async function GET(
        RESPONSE
     ===================================================== */
 
-    return new Response(
-      stream,
+    return new Response(sessionStream(stream,await sessionToken()),
       {
         status:
           200,
@@ -963,16 +758,10 @@ export async function GET(
     error:
       any
   ) {
-    console.error(
-      "[GTV STREAM-VOD]",
-      error
-    );
+    void 0;
 
     return new Response(
-      `Erreur VOD: ${
-        error?.message ||
-        "unknown"
-      }`,
+      "Média indisponible",
       {
         status:
           500,

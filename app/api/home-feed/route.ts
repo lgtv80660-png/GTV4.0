@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { secureJson as secureJsonBase } from '@/lib/security-json';
 import { requireSession } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -83,19 +83,22 @@ function trimSeries(items: any[]) {
 }
 
 export async function GET() {
+ let responseCredentials:{username?:string;password?:string}|undefined;
+ const secureJson=(body:unknown,init?:ResponseInit)=>secureJsonBase(body,init,responseCredentials);
+
   try {
-    const creds: any = await requireSession();
+    const creds: any = await requireSession().then(c=>{responseCredentials=c;return c;});
     const baseUrl = normalizeBase(creds);
     const username = String(creds?.username || creds?.user || "");
     const password = String(creds?.password || creds?.pass || "");
     if (!baseUrl || !username || !password) {
-      return NextResponse.json({ error: "Identifiants incomplets" }, { status: 400 });
+      return secureJson({ error: "Identifiants incomplets" }, { status: 400 });
     }
 
     const cacheKey = `${baseUrl}|${username}`;
     const cached = feedCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      return NextResponse.json(cached.value, {
+      return secureJson(cached.value, {
         headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" },
       });
     }
@@ -112,11 +115,11 @@ export async function GET() {
     };
     feedCache.set(cacheKey, { expiresAt: Date.now() + TTL, value });
 
-    return NextResponse.json(value, {
+    return secureJson(value, {
       headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" },
     });
   } catch (error) {
-    return NextResponse.json(
+    return secureJson(
       { error: error instanceof Error ? error.message : "Home feed indisponible" },
       { status: 500 },
     );
